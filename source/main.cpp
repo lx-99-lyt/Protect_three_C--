@@ -165,33 +165,77 @@ void syncAndSaveConfig() {
     config.save();
 }
 
+// 带重试的单次写入封装
+// 子模块启动需要时间完成 bind/listen，这里最多重试 max_retries 次，每次间隔 retry_ms 毫秒
+// 保证 main 进程不会因为子模块尚未就绪就静默丢失状态
+// 每次 sleep 前检查 g_running，收到 SIGINT/SIGTERM 后立刻中断，不再等剩余重试
+static bool writeU8WithRetry(const char* sock_path, Car::ModuleID mod_id,
+                              uint8_t item_id, uint8_t value,
+                              int max_retries = 10, int retry_ms = 200) {
+    for (int i = 0; i < max_retries && g_running; ++i) {
+        if (writeU8ToModule(sock_path, mod_id, item_id, value)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_ms));
+    }
+    return false;
+}
+
+static bool writeI32WithRetry(const char* sock_path, Car::ModuleID mod_id,
+                               uint8_t item_id, int32_t value,
+                               int max_retries = 10, int retry_ms = 200) {
+    for (int i = 0; i < max_retries && g_running; ++i) {
+        if (writeI32ToModule(sock_path, mod_id, item_id, value)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_ms));
+    }
+    return false;
+}
+
+static bool writeF32WithRetry(const char* sock_path, Car::ModuleID mod_id,
+                               uint8_t item_id, float value,
+                               int max_retries = 10, int retry_ms = 200) {
+    for (int i = 0; i < max_retries && g_running; ++i) {
+        if (writeF32ToModule(sock_path, mod_id, item_id, value)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_ms));
+    }
+    return false;
+}
+
+static bool writeFaultCodesWithRetry(const uint16_t* codes,
+                                     int max_retries = 10, int retry_ms = 200) {
+    for (int i = 0; i < max_retries && g_running; ++i) {
+        if (writeFaultCodesToModule(codes)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(retry_ms));
+    }
+    return false;
+}
+
 void restoreStateToModules(const ConfigManager::FullCarData& data) {
+    LOG_INFO("Restoring persisted state to module servers (with retry)...");
     int failed = 0;
 
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 1, data.door.front_left);
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 2, data.door.front_right);
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 3, data.door.back_left);
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 4, data.door.back_right);
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 5, data.door.trunk);
-    failed += !writeU8ToModule(Car::SOCK_DOOR, Car::ModuleID::DOOR, 6, data.door.lock_status);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 1, data.door.front_left);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 2, data.door.front_right);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 3, data.door.back_left);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 4, data.door.back_right);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 5, data.door.trunk);
+    failed += !writeU8WithRetry(Car::SOCK_DOOR, Car::ModuleID::DOOR, 6, data.door.lock_status);
 
-    failed += !writeF32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 1, data.status.speed);
-    failed += !writeI32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 2, data.status.rpm);
-    failed += !writeF32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 3, data.status.water_temp);
-    failed += !writeF32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 4, data.status.oil_temp);
-    failed += !writeF32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 5, data.status.fuel);
-    failed += !writeF32ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 6, data.status.battery_voltage);
-    failed += !writeU8ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 7, data.status.gear);
-    failed += !writeU8ToModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, 8, data.status.hand_brake);
+    failed += !writeF32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 1, data.status.speed);
+    failed += !writeI32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 2, data.status.rpm);
+    failed += !writeF32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 3, data.status.water_temp);
+    failed += !writeF32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 4, data.status.oil_temp);
+    failed += !writeF32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 5, data.status.fuel);
+    failed += !writeF32WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 6, data.status.battery_voltage);
+    failed += !writeU8WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 7, data.status.gear);
+    failed += !writeU8WithRetry(Car::SOCK_STATUS, Car::ModuleID::STATUS, 8, data.status.hand_brake);
 
-    failed += !writeU8ToModule(Car::SOCK_AIR, Car::ModuleID::AIR, 1, data.air.ac_switch);
-    failed += !writeU8ToModule(Car::SOCK_AIR, Car::ModuleID::AIR, 2, data.air.fan_speed);
-    failed += !writeI32ToModule(Car::SOCK_AIR, Car::ModuleID::AIR, 3, data.air.temp_set);
-    failed += !writeU8ToModule(Car::SOCK_AIR, Car::ModuleID::AIR, 4, data.air.inner_cycle);
+    failed += !writeU8WithRetry(Car::SOCK_AIR, Car::ModuleID::AIR, 1, data.air.ac_switch);
+    failed += !writeU8WithRetry(Car::SOCK_AIR, Car::ModuleID::AIR, 2, data.air.fan_speed);
+    failed += !writeI32WithRetry(Car::SOCK_AIR, Car::ModuleID::AIR, 3, data.air.temp_set);
+    failed += !writeU8WithRetry(Car::SOCK_AIR, Car::ModuleID::AIR, 4, data.air.inner_cycle);
 
-    failed += !writeU8ToModule(Car::SOCK_FAULT, Car::ModuleID::FAULT, 1, data.fault.fault_count);
-    failed += !writeFaultCodesToModule(data.fault.fault_codes);
-    failed += !writeU8ToModule(Car::SOCK_FAULT, Car::ModuleID::FAULT, 3, data.fault.wring_light);
+    failed += !writeU8WithRetry(Car::SOCK_FAULT, Car::ModuleID::FAULT, 1, data.fault.fault_count);
+    failed += !writeFaultCodesWithRetry(data.fault.fault_codes);
+    failed += !writeU8WithRetry(Car::SOCK_FAULT, Car::ModuleID::FAULT, 3, data.fault.wring_light);
 
     if (failed == 0) {
         LOG_INFO("Restored persisted state to all module servers.");

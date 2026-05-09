@@ -3,13 +3,28 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/epoll.h>
+#include <csignal>
 #include <unistd.h>
 #include <string>
 #include <cstring>
 #include <iostream>
 #include <cerrno>
 
-inline volatile bool g_keep_running = true;
+// 每个子进程独立持有自己的退出标志
+// sig_atomic_t 保证信号处理函数对它的写入是原子的，不会产生 data race
+// 不用 inline 是因为每个子模块各自编译成独立进程，不存在多定义问题
+static volatile sig_atomic_t g_keep_running = 1;
+
+// 统一的信号处理注册函数，每个子进程的 main() 调用一次即可
+// ModuleServer::runLoop() 检查 g_keep_running 来决定是否退出事件循环
+inline void setupModuleSignalHandlers() {
+    struct sigaction sa{};
+    sa.sa_handler = [](int) { g_keep_running = 0; };
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+}
 
 class ModuleServer {
 public:
@@ -126,7 +141,7 @@ private:
 
     void runLoop() {
         epoll_event events[10];
-        while (g_keep_running) {
+        while (g_keep_running == 1) {
             int nfds = epoll_wait(m_epoll_fd, events, 10, 1000);
             if (nfds < 0) {
                 if (errno == EINTR) {

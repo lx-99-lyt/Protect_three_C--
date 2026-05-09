@@ -41,7 +41,7 @@ protected:
         }
     }
 };
-int main() {AirModule().start(); return 0;}
+int main() { setupModuleSignalHandlers(); AirModule().start(); return 0; }
 #endif
 
 // ===================车门模块====================
@@ -96,7 +96,7 @@ protected:
         }
     }
 };
-int main() {DoorModule().start(); return 0;}
+int main() { setupModuleSignalHandlers(); DoorModule().start(); return 0; }
 #endif
 
 // ===================状态模块====================
@@ -161,7 +161,7 @@ protected:
         }
     }
 };
-int main() {StatusModule().start(); return 0;}
+int main() { setupModuleSignalHandlers(); StatusModule().start(); return 0; }
 #endif
 
 // ===================故障模块====================
@@ -201,5 +201,5 @@ protected:
         }
     }
 };
-int main() {FaultModule().start(); return 0;}
+int main() { setupModuleSignalHandlers(); FaultModule().start(); return 0; }
 #endif

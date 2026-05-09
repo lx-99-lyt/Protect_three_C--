@@ -50,4 +50,11 @@ struct Msg {
 
 #pragma pack(pop) // 恢复默认内存对齐
 
-}
+// 编译期安全检查：确保各状态结构体能装进 Msg.value union
+// 若未来给任意结构体加字段导致超出，编译器会直接报错，绝不会运行时踩内存
+static_assert(sizeof(DoorState)   <= sizeof(Msg::value), "DoorState too large for Msg union");
+static_assert(sizeof(StatusState) <= sizeof(Msg::value), "StatusState too large for Msg union");
+static_assert(sizeof(AirState)    <= sizeof(Msg::value), "AirState too large for Msg union");
+static_assert(sizeof(FaultState)  <= sizeof(Msg::value), "FaultState too large for Msg union");
+
+} // namespace Car
