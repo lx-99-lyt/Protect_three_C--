@@ -9,9 +9,10 @@
 5. [模块说明](#5-模块说明)
 6. [IPC 通信协议](#6-ipc-通信协议)
 7. [car_ctl 命令行工具使用手册](#7-car_ctl-命令行工具使用手册)
-8. [配置文件说明](#8-配置文件说明)
-9. [日志系统](#9-日志系统)
-10. [为项目新增一个模块](#10-为项目新增一个模块)
+8. [car_ai AI 大脑](#8-car_ai-ai-大脑)
+9. [配置文件说明](#9-配置文件说明)
+10. [日志系统](#10-日志系统)
+11. [为项目新增一个模块](#11-为项目新增一个模块)
 
 ---
 
@@ -36,6 +37,15 @@
 ┌──────────────────────────────────────────────────────┐
 │                    car_ctl（命令行工具）               │
 │            用于手动查询和写入任意模块字段               │
+└────────────────────┬─────────────────────────────────┘
+                     │ Unix Domain Socket
+                     ▼
+┌──────────────────────────────────────────────────────┐
+│                  car_ai（AI 大脑进程）                 │
+│  - 接收用户自然语言输入                                 │
+│  - 调用 DeepSeek / OpenAI 等大模型 API                │
+│  - 解析返回的 JSON，提取操作指令                        │
+│  - 经安全状态机过滤后，通过 IPC 写入对应子模块            │
 └────────────────────┬─────────────────────────────────┘
                      │ Unix Domain Socket
                      ▼
@@ -66,10 +76,13 @@
 ├── CarModules.cpp      # 四个子模块的具体实现（通过编译宏区分）
 ├── main.cpp            # 主控进程：状态恢复、自动落锁、定期落盘
 ├── car_ctl.cpp         # 命令行调试工具
+├── car_ai.cpp          # AI 大脑进程：自然语言 → IPC 指令
 ├── ConfigManager.hpp   # 配置管理器接口（单例）
 ├── ConfigManager.cpp   # 配置管理器实现：INI 读写、原子落盘
 ├── Car_Log.hpp         # 日志系统接口
 ├── Car_Log.cpp         # 日志系统实现：分级、自动轮转
+├── car_ai.conf         # AI 配置文件（含 API Key，已加入 .gitignore）
+├── car_ai.conf.example # AI 配置文件模板（可提交 Git，api_key 留空）
 └── Makefile            # 构建脚本
 ```
 
@@ -95,6 +108,7 @@ cd bin/
 |------------|--------------|
 | `car_main`   | 主控进程         |
 | `car_ctl`    | 命令行调试工具      |
+| `car_ai`     | AI 大脑进程      |
 | `car_door`   | 车门子模块进程      |
 | `car_status` | 状态仪表子模块进程    |
 | `car_air`    | 空调子模块进程      |
@@ -128,8 +142,11 @@ make clean
 # 终端 5：启动主控进程（子模块全部就绪后再启动）
 ./car_main
 
-# 终端 6：用命令行工具查询 / 写入
+# 终端 6：用命令行工具查询 / 写入（可选）
 ./car_ctl air get_all
+
+# 终端 7：启动 AI 大脑，开始自然语言对话（可选）
+./car_ai ./car_ai.conf
 ```
 
 ### 4.3 停止系统
@@ -468,7 +485,137 @@ LOG_ERROR("Socket 绑定失败");
 
 ---
 
-## 8. 配置文件说明
+## 8. car_ai AI 大脑
+
+`car_ai` 是系统的自然语言交互层，让用户可以用口语化的中文直接控制车载功能，而无需记忆任何命令格式。
+
+### 8.1 整体流程
+
+```
+用户自然语言输入
+    ↓
+构建请求 JSON（含 system prompt + 多轮历史）
+    ↓
+通过 openssl s_client 管道发送 HTTPS 请求到 AI API
+    ↓
+提取 message.content，剥除可能的 ```json ``` 壳
+    ↓
+解析 reply 字段 → 展示给用户
+解析 actions 数组 → 准备执行
+    ↓
+查询 car_status 模块当前车速
+安全状态机过滤（isSafeAction）
+    ↓
+通过 IPC 写入对应子模块
+```
+
+### 8.2 配置文件
+
+`car_ai` 启动时需要读取一个配置文件，默认从可执行文件同目录的 `car_ai.conf` 加载，也可以通过命令行参数指定路径：
+
+```bash
+./car_ai                    # 默认读取 ./car_ai.conf
+./car_ai /path/to/my.conf   # 指定配置文件路径
+```
+
+**配置项说明：**
+
+| 字段        | 是否必填 | 说明                              |
+|-----------|------|----------------------------------|
+| `api_key`  | 必填   | 所用平台的 API Key                   |
+| `model`    | 可选   | 模型名称，默认 `deepseek-v4-flash`     |
+| `api_url`  | 可选   | Chat Completions 端点，默认 DeepSeek 官方地址 |
+
+**快速配置：**
+
+```bash
+cp car_ai.conf.example car_ai.conf
+# 编辑 car_ai.conf，填写 api_key
+```
+
+`car_ai.conf` 已加入 `.gitignore`，不会被提交到 Git。`car_ai.conf.example` 作为模板可安全提交。
+
+**支持的 AI 平台**（修改 `model` 和 `api_url` 即可切换）：
+
+| 平台             | api_url                                                                 | 推荐模型                    |
+|----------------|-------------------------------------------------------------------------|-------------------------|
+| DeepSeek       | `https://api.deepseek.com/chat/completions`                             | `deepseek-v4-flash`     |
+| OpenAI         | `https://api.openai.com/v1/chat/completions`                            | `gpt-4o-mini`           |
+| Anthropic      | `https://api.anthropic.com/v1/messages`                                 | `claude-haiku-4-5-20251001` |
+| 阿里云百炼        | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`    | `qwen-turbo`            |
+| Google Gemini  | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `gemini-2.0-flash`   |
+| 本地（Ollama 等） | `http://localhost:11434/v1/chat/completions`                            | 取决于本地部署的模型              |
+
+### 8.3 AI 与车载系统的交互协议
+
+`car_ai` 在 system prompt 中约定了大模型必须返回固定格式的 JSON：
+
+```json
+{
+  "reply": "对用户说的话",
+  "actions": [
+    {"module": "air",  "field": "temp_set",    "value": 26},
+    {"module": "door", "field": "lock_status",  "value": 1}
+  ]
+}
+```
+
+- `reply`：展示给用户的自然语言回复
+- `actions`：需要执行的操作列表，可以为空数组
+
+### 8.4 AI 可控字段
+
+并非所有字段都允许 AI 操作，以下是 AI 有权写入的字段：
+
+| 模块     | 可控字段                                                    |
+|--------|--------------------------------------------------------|
+| `door` | `front_left` `front_right` `back_left` `back_right` `trunk` `lock_status` |
+| `air`  | `ac_switch` `fan_speed` `temp_set` `inner_cycle`       |
+| `status` | `hand_brake`（仅此一个）                                  |
+
+> **gear（档位）字段被禁止**：档位涉及行车安全，系统强制拒绝 AI 对档位的任何操作指令，只能通过 `car_ctl` 手动操作。
+
+### 8.5 安全状态机
+
+每条 AI 指令在执行前都会经过 `isSafeAction()` 检查：
+
+| 条件                    | 被拦截的操作                        | 说明                      |
+|-----------------------|-------------------------------|-------------------------|
+| 任何时候                  | `gear` 字段的写入                  | 档位禁止 AI 操控              |
+| 车速 > 5 km/h           | 开启任意车门（`lock_status` 除外）      | 行驶中禁止开门，但允许锁门           |
+
+被安全检查拦截的指令不会执行，AI 的 `reply` 仍会正常显示。
+
+### 8.6 多轮对话
+
+`car_ai` 在进程生命周期内保留最近 20 条消息（10 轮对话）的历史，使 AI 能理解上下文。进程退出后历史清空，下次启动从新对话开始。
+
+### 8.7 两种操控方式对比
+
+| 对比项     | `car_ctl`（命令行工具）       | `car_ai`（AI 大脑）           |
+|---------|------------------------|--------------------------|
+| 操控方式   | 精确命令，需记忆字段名            | 自然语言，随意描述                |
+| 响应速度   | 即时（本地 IPC）             | 需等待 API 返回（通常 1-3 秒）     |
+| 适用场景   | 开发调试、批量操作、自动化脚本        | 日常交互、演示、语音控制扩展           |
+| 网络依赖   | 无                      | 需要访问 AI API              |
+| 安全限制   | 无（可操作所有字段）             | 有（gear 禁止，行驶中禁止开门）       |
+
+### 8.8 对话示例
+
+```
+你> 把空调开到 26 度，开内循环
+AI> 好的，已将空调温度设置为 26°C 并开启内循环模式。
+
+你> 锁车门
+AI> 已锁定所有车门。
+
+你> 现在能开车门吗？
+AI> 当前车速为 35 km/h，行驶中无法开启车门，请停车后再操作。
+```
+
+---
+
+## 9. 配置文件说明
 
 配置文件路径：`./car_info.ini`（与可执行文件同目录）
 
@@ -527,7 +674,7 @@ fault_code_9 = 0
 
 ---
 
-## 9. 日志系统
+## 10. 日志系统
 
 **主控进程日志**：`./car_ctl.log`（与可执行文件同目录）
 
@@ -546,7 +693,7 @@ Logger::getInstance().init("car_ctl.log", LogLevel::DEBUG);  // 改为 DEBUG 可
 
 ---
 
-## 10. 为项目新增一个模块
+## 11. 为项目新增一个模块
 
 以新增"车灯模块"为例，说明完整步骤。
 
@@ -601,13 +748,13 @@ int main() { setupModuleSignalHandlers(); LightModule().start(); return 0; }
 #endif
 ```
 
-**第三步**：在 `Makefile` 添加编译目标：
+**第三步**：在 `CMakeLists.txt` 添加编译目标：
 
-```makefile
-TARGETS := car_main car_ctl car_door car_status car_air car_fault car_light
-
-car_light: CarModules.cpp
-    $(CXX) $(CXXFLAGS) -DBUILD_Car_Light -o $@ $^
+```cmake
+add_executable(Car_Light
+    source/server/CarModules.cpp
+)
+target_compile_definitions(Car_Light PRIVATE BUILD_Car_Light)
 ```
 
 **第四步**：在 `car_ctl.cpp` 的路由表和字段字典里补充新模块的条目，之后就可以用 `./car_ctl light get_all` 等命令操作了。

@@ -44,3 +44,8 @@ add_executable(Car_Fault
 	source/server/CarModules.cpp
 )
 target_compile_definitions(Car_Fault PRIVATE BUILD_Car_Fault)
+
+# AI 大脑进程
+add_executable(car_ai
+    source/client/car_ai.cpp
+)
